@@ -16,6 +16,7 @@ from django.utils import timezone
 import requests
 from extra_views import FormSetView
 from markdownx.utils import markdownify
+from .pdfs import render_pdf, display_html
 
 from .models import Workshop, Order, OrderItem, Rate, PosterOption, MeetingOption
 from .forms import OrderForm, OrderDetailForm, OrderDetailFormSet
@@ -194,6 +195,22 @@ class ConfirmOrder(SessionConfirmMixin, TemplateView):
         return context
 
 
+class ViewInvoice(View):
+    def get(self, request, *arg, **kwargs):
+        order = Order.objects.get(transaction_id=kwargs['transaction_id'])
+        all_orders = order.orderitem_set.all()
+        workshop = all_orders[0].rate.workshop
+        params = {
+            'today': timezone.now(),
+            'workshop': workshop,
+            'order': order,
+            'tickets': all_orders,
+            'total': '$' + str(order.order_total),
+            'request': request,
+        }
+        return HttpResponse(display_html('../templates/payments/invoice.html', params))
+
+
 class SubmitOrder(View):
     http_method_names = ['post']
 
@@ -223,6 +240,7 @@ class SubmitOrder(View):
         order = Order.objects.create(contact_email=order_data['email'],
                                      contact_name=order_data['name'],
                                      order_total=order_data['order_total'])
+
         items = []
         for ticket in order_data['tickets']:
             items.append(OrderItem(order=order, rate_id=ticket['rate'],
@@ -303,13 +321,22 @@ class OrderCallback(View):
                 body += '<li>%s (%s): %s</li>' % (oi.name, oi.email, oi.rate)
             body += '</ul></div>'
             body += '</html>'
-
+            params = {
+                'today': timezone.now(),
+                'workshop': workshop,
+                'order': order,
+                'tickets': all_orders,
+                'total': '$' + str(order.order_total),
+                'request': request,
+            }
+            invoice = render_pdf('../templates/payments/invoice.html', params)
             msg = EmailMultiAlternatives(subject, plaintext_msg,
                                          'noreply@qiime2.org',
                                          to=[order.contact_email],
                                          cc=[i.email for i in all_orders],
                                          bcc=[i[1] for i in settings.ADMINS])
             msg.attach_alternative(body, "text/html")
+            msg.attach('invoice.pdf', invoice, 'application/pdf')
             msg.send()
         except (Order.DoesNotExist, KeyError) as e:
             logger.error('%s: %s' % (e, request.body))
